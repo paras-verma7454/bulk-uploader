@@ -1,0 +1,18 @@
+[project]
+name = "bulk-uploader"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.18.4",
+    "cloudinary>=1.44.1",
+    "fastapi[standard]>=0.136.1",
+    "lxml>=6.1.0",
+    "pg8000>=1.31.2",
+    "psycopg2-binary>=2.9.12",
+    "python-docx>=1.2.0",
+    "python-dotenv>=1.2.2",
+    "sqids>=0.5.2",
+    "sqlalchemy>=2.0.49",
+]
