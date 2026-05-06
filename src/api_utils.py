@@ -79,11 +79,9 @@ def write_report_html(report_data: dict[str, Any], source_file: str) -> str:
                 option_html = str(option.get("html") or "").strip()
                 option_text = str(option.get("text") or "").strip()
                 rendered_option = dedupe_images_in_html(option_html) if option_html else html.escape(option_text)
-                answer_mark = " <span class=\"answer-mark\">(Correct)</span>" if answer_label and label == answer_label else ""
                 option_items.append(
                     "<li class=\"option\"><span class=\"option-content\">"
                     + rendered_option
-                    + answer_mark
                     + "</span></li>"
                 )
 
@@ -125,7 +123,7 @@ def write_report_html(report_data: dict[str, Any], source_file: str) -> str:
         "  <script>window.MathJax = { tex: { inlineMath: [['\\\\(', '\\\\)'], ['$', '$']] }, svg: { fontCache: 'global' } };</script>\n"
         "  <script defer src=\"https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js\"></script>\n"
         "  <style>\n"
-        "    body { font-family: Segoe UI, Arial, sans-serif; margin: 2rem; background: #f8fafc; color: #0f172a; }\n"
+        "    body { font-family: 'Segoe UI', 'Cambria Math', 'Times New Roman', Arial, sans-serif; margin: 2rem; background: #f8fafc; color: #0f172a; }\n"
         "    .container { max-width: 1100px; margin: 0 auto; }\n"
         "    h1 { margin: 0 0 0.5rem 0; }\n"
         "    p.meta { color: #475569; margin: 0 0 1.5rem 0; }\n"
@@ -133,14 +131,14 @@ def write_report_html(report_data: dict[str, Any], source_file: str) -> str:
         "    .question-head { display: flex; justify-content: space-between; gap: 1rem; align-items: center; margin-bottom: 0.8rem; flex-wrap: wrap; }\n"
         "    .question-head h2 { margin: 0; font-size: 1.1rem; }\n"
         "    .answer-badge { background: #dbeafe; color: #1e3a8a; border-radius: 999px; padding: 0.2rem 0.65rem; font-weight: 600; font-size: 0.88rem; }\n"
-        "    .question-body { margin-bottom: 0.9rem; line-height: 1.55; }\n"
+        "    .question-body { margin-bottom: 0.9rem; line-height: 1.55; font-family: 'Cambria Math', 'Times New Roman', serif; }\n"
         "    .option-list { margin: 0; padding-left: 0; list-style: none; }\n"
-        "    .option { margin-bottom: 0.55rem; line-height: 1.45; }\n"
+        "    .option { margin-bottom: 0.55rem; line-height: 1.45; font-family: 'Cambria Math', 'Times New Roman', serif; }\n"
         "    .option .answer-mark { font-weight: 600; color: #334155; margin-left: 0.5rem; }\n"
-        "    .solution { margin-top: 0.9rem; border-top: 1px dashed #cbd5e1; padding-top: 0.7rem; }\n"
+        "    .solution { margin-top: 0.9rem; border-top: 1px dashed #cbd5e1; padding-top: 0.7rem; font-family: 'Cambria Math', 'Times New Roman', serif; }\n"
         "    .solution h3 { margin: 0 0 0.45rem 0; font-size: 0.95rem; color: #334155; }\n"
         "    .embedded-image { max-width: 100%; height: auto; border-radius: 6px; }\n"
-        "    .equation { font-family: Cambria Math, Times New Roman, serif; }\n"
+        "    .equation { font-family: 'Cambria Math', 'Times New Roman', serif; }\n"
         "  </style>\n"
         "</head>\n"
         "<body>\n"

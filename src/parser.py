@@ -26,7 +26,16 @@ OPTION_RE = re.compile(r"^\s*(?:\(([A-Da-d])\)|([A-Da-d])(?:[\.)]|\s+))\s*(.*)$"
 ANSWER_RE = re.compile(r"^\s*(?:ans|answer)\s*[:.\-\s]*\(?([A-Da-d])\)?\b", re.IGNORECASE)
 SOLUTION_RE = re.compile(r"^\s*(?:sol(?:ution)?|explanation)\b[:.\-\s]*(.*)$", re.IGNORECASE)
 SPECIAL_TEXT_REPLACEMENTS = {
-	"\uf0d0": "△",
+	# Map Word's private-use triangle glyphs and similar markers to a
+	# standard Delta (Δ) which renders reliably across fonts.
+	"\uf0d0": "Δ",
+	"\uf0c4": "Δ",
+	"\ue0b0": "Δ",
+	# Some environments render the private-use glyph as a visible glyph
+	# character in the string; include the literal in the map as well.
+	"": "Δ",
+	# Also map the plain white-up-pointing-triangle to Delta
+	"\u25b3": "Δ",
 }
 
 
@@ -36,10 +45,6 @@ _CLOUDINARY_FOLDER = "docx-images"
 _CLOUDINARY_UPLOAD_CACHE: OrderedDict[str, str] = OrderedDict()
 _CLOUDINARY_CACHE_MAX_ITEMS = 512
 _CLOUDINARY_UPLOAD_TIMEOUT_SECONDS = 20
-
-
-# Normalize Word's private-use geometry glyph to a real Unicode angle sign.
-SPECIAL_TEXT_REPLACEMENTS["\uf0d0"] = "\u2220"
 
 
 @dataclass(slots=True)
@@ -181,6 +186,21 @@ def extract_option_content(text: str, html_value: str, option_match: re.Match[st
 	if not body_text:
 		body_text = normalize_text(option_match.group(3) or "")
 
+	# Ensure the prefix (label) is always included in both text and HTML output
+	# This prevents losing option labels when content is only in HTML (e.g., equations)
+	# Always prepend prefix if it exists, even if body_text is empty
+	if prefix:
+		prefix_clean = prefix.rstrip()
+		if body_text:
+			body_text = prefix_clean + " " + body_text
+		else:
+			body_text = prefix_clean
+		
+		# Preserve the prefix in HTML as well
+		escaped_prefix_safe = html.escape(prefix_clean)
+		if not cleaned_html.lstrip().startswith(escaped_prefix_safe):
+			cleaned_html = html.escape(prefix_clean) + " " + cleaned_html.lstrip()
+
 	return body_text, cleaned_html.lstrip()
 
 
@@ -194,8 +214,14 @@ def extract_paragraph_fragments(doc: Document) -> list[ParagraphFragment]:
 	for paragraph in doc.paragraphs:
 		html_parts = render_xml_content(paragraph._p, paragraph.part)
 
+		# Normalize plain text and also ensure any special/private-use
+		# glyphs are converted in both plain-text and HTML fragments.
 		text = normalize_text(paragraph.text)
-		html_value = normalize_html("".join(html_parts))
+		raw_html = "".join(html_parts)
+		# Replace special symbols in HTML fragments as well so
+		# `question_html` contains the normalized symbol.
+		raw_html = replace_special_text_symbols(raw_html)
+		html_value = normalize_html(raw_html)
 
 		if text or html_value:
 			fragments.append(ParagraphFragment(text=text, html=html_value or html.escape(paragraph.text)))
