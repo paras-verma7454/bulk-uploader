@@ -5,7 +5,7 @@ import hashlib
 import logging
 import os
 import re
-import shutil
+
 import subprocess
 import tempfile
 import uuid
@@ -26,15 +26,11 @@ OPTION_RE = re.compile(r"^\s*(?:\(([A-Da-d])\)|([A-Da-d])(?:[\.)]|\s+))\s*(.*)$"
 ANSWER_RE = re.compile(r"^\s*(?:ans|answer)\s*[:.\-\s]*\(?([A-Da-d])\)?\b", re.IGNORECASE)
 SOLUTION_RE = re.compile(r"^\s*(?:sol(?:ution)?|explanation)\b[:.\-\s]*(.*)$", re.IGNORECASE)
 SPECIAL_TEXT_REPLACEMENTS = {
-	# Map Word's private-use triangle glyphs and similar markers to a
-	# standard Delta (Δ) which renders reliably across fonts.
+	
 	"\uf0d0": "Δ",
 	"\uf0c4": "Δ",
 	"\ue0b0": "Δ",
-	# Some environments render the private-use glyph as a visible glyph
-	# character in the string; include the literal in the map as well.
 	"": "Δ",
-	# Also map the plain white-up-pointing-triangle to Delta
 	"\u25b3": "Δ",
 }
 
@@ -135,7 +131,7 @@ def join_html_parts(parts: list[str]) -> str:
 
 
 def html_to_text(html_fragment: str) -> str:
-	# Strip tags and unescape entities to produce a plain-text fallback
+
 	s = re.sub(r"<[^>]+>", "", html_fragment)
 	s = html.unescape(s)
 	return normalize_text(s)
@@ -148,32 +144,27 @@ def extract_option_content(text: str, html_value: str, option_match: re.Match[st
 	cleaned_html = html_value
 
 	def _html_to_text(h: str) -> str:
-		# Remove tags and unescape HTML entities to produce a readable fallback
+		
 		s = re.sub(r"<[^>]+>", "", h)
 		s = html.unescape(s)
 		return normalize_text(s)
 
-	# If body text is empty (common when the option body is an equation
-	# rendered into HTML but not present in paragraph.text), try to extract
-	# the body from the HTML fragment instead of returning empty values.
 	if not body_text:
-		# Attempt to strip the label prefix from the HTML and use the rest
+		
 		escaped_prefix = html.escape(prefix)
 		if cleaned_html.startswith(escaped_prefix):
 			candidate = cleaned_html[len(escaped_prefix) :].lstrip()
 			body_text = _html_to_text(candidate)
 			cleaned_html = candidate
 		else:
-			# Try prefix without trailing whitespace
+			
 			stripped_prefix = html.escape(prefix.rstrip())
 			if cleaned_html.startswith(stripped_prefix):
 				candidate = cleaned_html[len(stripped_prefix) :].lstrip()
 				body_text = _html_to_text(candidate)
 				cleaned_html = candidate
 			else:
-				# If the HTML contains an equation span or other inline element,
-				# try to locate the first inline element and use from there.
-				# Fallback: search for the first '<span' or '<img' occurrence.
+			
 				for marker in ("<span", "<img", "<math", "<svg"):
 					idx = cleaned_html.find(marker)
 					if idx != -1:
@@ -182,13 +173,11 @@ def extract_option_content(text: str, html_value: str, option_match: re.Match[st
 						cleaned_html = candidate
 						break
 
-	# If we still don't have body_text, fall back to the original capture
+	
 	if not body_text:
 		body_text = normalize_text(option_match.group(3) or "")
 
-	# Ensure the prefix (label) is always included in both text and HTML output
-	# This prevents losing option labels when content is only in HTML (e.g., equations)
-	# Always prepend prefix if it exists, even if body_text is empty
+	
 	if prefix:
 		prefix_clean = prefix.rstrip()
 		if body_text:
@@ -196,7 +185,7 @@ def extract_option_content(text: str, html_value: str, option_match: re.Match[st
 		else:
 			body_text = prefix_clean
 		
-		# Preserve the prefix in HTML as well
+		
 		escaped_prefix_safe = html.escape(prefix_clean)
 		if not cleaned_html.lstrip().startswith(escaped_prefix_safe):
 			cleaned_html = html.escape(prefix_clean) + " " + cleaned_html.lstrip()
@@ -214,12 +203,10 @@ def extract_paragraph_fragments(doc: Document) -> list[ParagraphFragment]:
 	for paragraph in doc.paragraphs:
 		html_parts = render_xml_content(paragraph._p, paragraph.part)
 
-		# Normalize plain text and also ensure any special/private-use
-		# glyphs are converted in both plain-text and HTML fragments.
+		
 		text = normalize_text(paragraph.text)
 		raw_html = "".join(html_parts)
-		# Replace special symbols in HTML fragments as well so
-		# `question_html` contains the normalized symbol.
+	
 		raw_html = replace_special_text_symbols(raw_html)
 		html_value = normalize_html(raw_html)
 
@@ -312,7 +299,7 @@ def upload_image_to_cloudinary(content_type: str, image_bytes: bytes) -> str | N
 			use_filename=False,
 			timeout=_CLOUDINARY_UPLOAD_TIMEOUT_SECONDS,
 		)
-	except Exception as exc:  # noqa: BLE001
+	except Exception as exc: 
 		logger.exception("Failed to upload image to Cloudinary")
 		raise RuntimeError("Failed to upload embedded image to Cloudinary") from exc
 
@@ -367,7 +354,7 @@ def render_drawing(drawing: etree._Element, part) -> str:
 	if not content_type.startswith("image/") or not image_bytes:
 		return '<span class="embedded-placeholder">[image]</span>'
 
-	# Browsers handle these inline reliably; upload to Cloudinary and store URL.
+	
 	supported_content_types = {
 		"image/png",
 		"image/jpeg",
@@ -392,7 +379,7 @@ def render_windows_metafile(content_type: str, image_bytes: bytes) -> str | None
 		return None
 
 	suffix = ".emf" if "emf" in content_type else ".wmf"
-	# Use a system temporary directory to avoid creating a persistent `tmp` folder
+	
 	with tempfile.TemporaryDirectory(prefix="metafile-") as tmpdir:
 		temp_dir = Path(tmpdir)
 		source_path = temp_dir / f"image{suffix}"
@@ -727,8 +714,7 @@ def parse_questions_from_fragments(fragments: list[ParagraphFragment], source_fi
 			current_question.solution_html_parts.append(html_value)
 			continue
 
-		# Try to match option labels in the visible text first; if empty or no match,
-		# attempt to match against a plain-text extraction of the HTML fragment
+		
 		option_match = OPTION_RE.match(text)
 		used_text_for_match = text
 		if option_match is None and html_value:
@@ -738,7 +724,7 @@ def parse_questions_from_fragments(fragments: list[ParagraphFragment], source_fi
 				used_text_for_match = candidate
 		if option_match:
 			option_label = option_match.group(1) or option_match.group(2)
-			# Pass the text used for matching (either paragraph.text or extracted HTML text)
+			
 			option_text, option_html = extract_option_content(used_text_for_match, html_value, option_match)
 			current_option = MCQOption(label=option_label)
 			if option_text:

@@ -183,7 +183,7 @@ def parse_and_store_upload(file: UploadFile) -> dict[str, Any]:
     except RuntimeError as exc:
         logger.exception("Failed to process embedded media for document: %s", file.filename)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  
         logger.exception("Failed to parse document: %s", file.filename)
         raise HTTPException(status_code=500, detail="Failed to parse document") from exc
 
