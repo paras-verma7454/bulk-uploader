@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 
 import subprocess
 import tempfile
@@ -12,19 +13,22 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from io import BytesIO
+from math import cos, pi, sin
 from pathlib import Path
 from typing import BinaryIO
 
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 from docx import Document
 from lxml import etree
 
 import cloudinary
 from cloudinary import uploader as cloudinary_uploader
 
-QUESTION_START_RE = re.compile(r"^\s*(\d+)[\.)]\s*(.*)$")
+QUESTION_START_RE = re.compile(r"^\s*(?:q\s*)?(\d+)[\.)]\s*(.*)$", re.IGNORECASE)
 OPTION_RE = re.compile(r"^\s*(?:\(([A-Da-d])\)|([A-Da-d])(?:[\.)]|\s+))\s*(.*)$")
 ANSWER_RE = re.compile(r"^\s*(?:ans|answer)\s*[:.\-\s]*\(?([A-Da-d])\)?\b", re.IGNORECASE)
 SOLUTION_RE = re.compile(r"^\s*(?:sol(?:ution)?|explanation)\b[:.\-\s]*(.*)$", re.IGNORECASE)
+COMPOUND_MARKER_RE = re.compile(r"^\s*#\s*(?:start|end)\s+compound(?:\s+hindi)?\s*#\s*$", re.IGNORECASE)
 SPECIAL_TEXT_REPLACEMENTS = {
 	
 	"\uf0d0": "Δ",
@@ -68,6 +72,8 @@ class MCQOption:
 class MCQQuestion:
 	source_file: str
 	number: str | None = None
+	compound_text: str = ""
+	compound_html: str = ""
 	question_text_parts: list[str] = field(default_factory=list)
 	question_html_parts: list[str] = field(default_factory=list)
 	options: list[MCQOption] = field(default_factory=list)
@@ -327,6 +333,10 @@ def render_xml_content(element: etree._Element, part) -> list[str]:
 			parts.append("<br/>")
 		elif local_name == "drawing":
 			parts.append(render_drawing(child, part))
+		elif local_name in {"object", "pict"}:
+			ole_html = render_ole_preview(child, part)
+			if ole_html:
+				parts.append(ole_html)
 		elif local_name in {"oMath", "oMathPara"}:
 			parts.append(render_equation(child))
 		else:
@@ -336,6 +346,10 @@ def render_xml_content(element: etree._Element, part) -> list[str]:
 
 
 def render_drawing(drawing: etree._Element, part) -> str:
+	chart_html = render_chart_drawing(drawing, part)
+	if chart_html:
+		return chart_html
+
 	namespaces = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
 	blip = drawing.find(".//a:blip", namespaces=namespaces)
 	if blip is None:
@@ -364,7 +378,7 @@ def render_drawing(drawing: etree._Element, part) -> str:
 	}
 	if content_type not in supported_content_types:
 		if content_type in {"image/x-emf", "image/emf", "image/x-wmf", "image/wmf"}:
-			converted_html = render_windows_metafile(content_type, image_bytes)
+			converted_html = render_metafile_with_inkscape(content_type, image_bytes)
 			if converted_html:
 				return converted_html
 		return '<span class="embedded-placeholder">[image]</span>'
@@ -374,10 +388,200 @@ def render_drawing(drawing: etree._Element, part) -> str:
 	return f'<img class="embedded-image" alt="Embedded image" src="{html.escape(url, quote=True)}" />'
 
 
-def render_windows_metafile(content_type: str, image_bytes: bytes) -> str | None:
-	if os.name != "nt":
+def render_chart_drawing(drawing: etree._Element, part) -> str | None:
+	namespaces = {
+		"c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
+		"r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+	}
+	chart = drawing.find(".//c:chart", namespaces=namespaces)
+	if chart is None:
 		return None
 
+	rel_id = chart.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+	if not rel_id:
+		return '<span class="embedded-placeholder">[chart]</span>'
+
+	chart_part = part.related_parts.get(rel_id)
+	if chart_part is None:
+		return '<span class="embedded-placeholder">[chart]</span>'
+
+	chart_bytes = getattr(chart_part, "blob", b"") or b""
+	if not chart_bytes:
+		return '<span class="embedded-placeholder">[chart]</span>'
+
+	try:
+		chart_root = etree.fromstring(chart_bytes)
+		rendered_bytes = render_pie_chart_png(chart_root)
+	except Exception:
+		logger.exception("Failed to render chart drawing")
+		return '<span class="embedded-placeholder">[chart]</span>'
+
+	if not rendered_bytes:
+		return '<span class="embedded-placeholder">[chart]</span>'
+
+	url = upload_image_to_cloudinary("image/png", rendered_bytes)
+	return f'<img class="embedded-image" alt="Embedded chart" src="{html.escape(url, quote=True)}" />'
+
+
+def render_pie_chart_png(chart_root: etree._Element) -> bytes | None:
+	namespaces = {"c": "http://schemas.openxmlformats.org/drawingml/2006/chart"}
+	pie_chart = chart_root.find(".//c:pieChart", namespaces=namespaces)
+	if pie_chart is None:
+		return None
+
+	series = pie_chart.find(".//c:ser", namespaces=namespaces)
+	if series is None:
+		return None
+
+	labels = chart_cache_values(series, ".//c:cat//c:strCache", namespaces)
+	if not labels:
+		labels = chart_cache_values(series, ".//c:cat//c:numCache", namespaces)
+	values_text = chart_cache_values(series, ".//c:val//c:numCache", namespaces)
+	if not labels or not values_text:
+		return None
+
+	values: list[float] = []
+	cleaned_labels: list[str] = []
+	for label, value_text in zip(labels, values_text):
+		try:
+			value = float(value_text)
+		except ValueError:
+			continue
+		if value <= 0:
+			continue
+		cleaned_labels.append(label)
+		values.append(value)
+
+	if not cleaned_labels or not values:
+		return None
+
+	return draw_pie_chart_png(cleaned_labels, values)
+
+
+def chart_cache_values(parent: etree._Element, xpath: str, namespaces: dict[str, str]) -> list[str]:
+	cache = parent.find(xpath, namespaces=namespaces)
+	if cache is None:
+		return []
+
+	points: list[tuple[int, str]] = []
+	for point in cache.findall(".//c:pt", namespaces=namespaces):
+		idx_text = point.get("idx", "0")
+		value_node = point.find("c:v", namespaces=namespaces)
+		if value_node is None or value_node.text is None:
+			continue
+		try:
+			idx = int(idx_text)
+		except ValueError:
+			idx = 0
+		points.append((idx, normalize_text(value_node.text)))
+
+	return [value for _, value in sorted(points)]
+
+
+def draw_pie_chart_png(labels: list[str], values: list[float]) -> bytes:
+	width = 720
+	height = 520
+	image = Image.new("RGB", (width, height), "white")
+	draw = ImageDraw.Draw(image)
+	font = ImageFont.load_default()
+	total = sum(values)
+
+	colors = [
+		(68, 114, 196),
+		(237, 125, 49),
+		(165, 165, 165),
+		(255, 192, 0),
+		(91, 155, 213),
+		(112, 173, 71),
+	]
+	box = (95, 40, 485, 430)
+	start_angle = -90.0
+	mid_angles: list[float] = []
+
+	for index, value in enumerate(values):
+		sweep = 360.0 * value / total
+		end_angle = start_angle + sweep
+		draw.pieslice(box, start=start_angle, end=end_angle, fill=colors[index % len(colors)], outline="white", width=2)
+		mid_angles.append(start_angle + sweep / 2.0)
+		start_angle = end_angle
+
+	center_x = (box[0] + box[2]) / 2.0
+	center_y = (box[1] + box[3]) / 2.0
+	radius = (box[2] - box[0]) / 2.0
+	for label, value, angle in zip(labels, values, mid_angles):
+		radians = angle * pi / 180.0
+		x = center_x + cos(radians) * radius * 0.62
+		y = center_y + sin(radians) * radius * 0.62
+		text = f"{label}\n{value:g}"
+		bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=3)
+		text_width = bbox[2] - bbox[0]
+		text_height = bbox[3] - bbox[1]
+		draw.multiline_text((x - text_width / 2, y - text_height / 2), text, fill="black", font=font, spacing=3, align="center")
+
+	legend_x = 525
+	legend_y = 145
+	for index, label in enumerate(labels):
+		y = legend_y + index * 32
+		draw.rectangle((legend_x, y, legend_x + 18, y + 18), fill=colors[index % len(colors)])
+		draw.text((legend_x + 28, y + 2), label, fill="black", font=font)
+
+	output = BytesIO()
+	image.save(output, format="PNG")
+	return output.getvalue()
+
+
+def render_ole_preview(element: etree._Element, part) -> str | None:
+	image_part = find_ole_preview_part(element, part)
+	if image_part is None:
+		return None
+
+	content_type = getattr(image_part, "content_type", "") or ""
+	image_bytes = getattr(image_part, "blob", b"") or b""
+	if not content_type.startswith("image/") or not image_bytes:
+		return '<span class="embedded-placeholder">[image]</span>'
+
+	supported_content_types = {
+		"image/png",
+		"image/jpeg",
+		"image/gif",
+		"image/webp",
+		"image/svg+xml",
+	}
+	if content_type not in supported_content_types:
+		if content_type in {"image/x-emf", "image/emf", "image/x-wmf", "image/wmf"}:
+			converted_html = render_metafile_with_inkscape(content_type, image_bytes)
+			if converted_html:
+				return converted_html
+		return '<span class="embedded-placeholder">[image]</span>'
+
+	url = upload_image_to_cloudinary(content_type, image_bytes)
+	return f'<img class="embedded-image" alt="Embedded image" src="{html.escape(url, quote=True)}" />'
+
+
+def find_ole_preview_part(element: etree._Element, part):
+	namespaces = {
+		"v": "urn:schemas-microsoft-com:vml",
+		"r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+	}
+	imagedata_nodes = element.xpath(".//v:imagedata", namespaces=namespaces)
+	if not imagedata_nodes:
+		return None
+
+	for node in imagedata_nodes:
+		rel_id = node.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+		if not rel_id:
+			rel_id = attr_by_local(node, "id")
+		if not rel_id:
+			rel_id = attr_by_local(node, "embed")
+		if not rel_id:
+			continue
+		related_part = part.related_parts.get(rel_id)
+		if related_part is not None:
+			return related_part
+	return None
+
+
+def render_metafile_with_inkscape(content_type: str, image_bytes: bytes) -> str | None:
 	suffix = ".emf" if "emf" in content_type else ".wmf"
 	
 	with tempfile.TemporaryDirectory(prefix="metafile-") as tmpdir:
@@ -387,19 +591,11 @@ def render_windows_metafile(content_type: str, image_bytes: bytes) -> str | None
 		source_path.write_bytes(image_bytes)
 
 		command = [
-			"powershell",
-			"-NoProfile",
-			"-Command",
-			(
-				"Add-Type -AssemblyName System.Drawing; "
-				f"$img = [System.Drawing.Image]::FromFile('{source_path}'); "
-				"$bmp = New-Object System.Drawing.Bitmap $img.Width, $img.Height; "
-				"$graphics = [System.Drawing.Graphics]::FromImage($bmp); "
-				"$graphics.Clear([System.Drawing.Color]::White); "
-				"$graphics.DrawImage($img, 0, 0, $img.Width, $img.Height); "
-				f"$bmp.Save('{target_path}', [System.Drawing.Imaging.ImageFormat]::Png); "
-				"$graphics.Dispose(); $bmp.Dispose(); $img.Dispose();"
-			),
+			"inkscape",
+			str(source_path),
+			"--export-area-drawing",
+			"-o",
+			str(target_path),
 		]
 
 		try:
@@ -411,9 +607,74 @@ def render_windows_metafile(content_type: str, image_bytes: bytes) -> str | None
 			return None
 
 		converted_bytes = target_path.read_bytes()
+		trimmed_bytes = trim_png_bytes(converted_bytes, source_path=target_path)
+		if trimmed_bytes:
+			converted_bytes = trimmed_bytes
 		url = upload_image_to_cloudinary("image/png", converted_bytes)
 
 		return f'<img class="embedded-image" alt="Embedded image" src="{html.escape(url, quote=True)}" />'
+
+
+def trim_png_bytes(png_bytes: bytes, source_path: Path) -> bytes | None:
+	trimmed_bytes = None
+	try:
+		trimmed_bytes = trim_png_with_imagemagick(source_path)
+	except (OSError, subprocess.CalledProcessError):
+		logger.exception("ImageMagick trim failed; falling back to Pillow")
+
+	if trimmed_bytes:
+		return trimmed_bytes
+
+	try:
+		return trim_png_with_pillow(png_bytes)
+	except Exception:
+		logger.exception("Pillow trim failed; using untrimmed image")
+		return None
+
+
+def trim_png_with_imagemagick(source_path: Path) -> bytes | None:
+	magick_cmd = shutil.which("magick") or shutil.which("convert")
+	if not magick_cmd:
+		return None
+
+	target_path = source_path.with_name("image-trimmed.png")
+	command = [
+		magick_cmd,
+		str(source_path),
+		"-fuzz",
+		"1%",
+		"-trim",
+		"+repage",
+		str(target_path),
+	]
+	subprocess.run(command, check=True, capture_output=True, text=True)
+
+	if not target_path.exists():
+		return None
+
+	return target_path.read_bytes()
+
+
+def trim_png_with_pillow(png_bytes: bytes) -> bytes | None:
+	image = Image.open(BytesIO(png_bytes))
+	if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+		background = Image.new("RGBA", image.size, (255, 255, 255, 255))
+		image = Image.alpha_composite(background, image.convert("RGBA")).convert("RGB")
+	else:
+		image = image.convert("RGB")
+
+	white = Image.new("RGB", image.size, (255, 255, 255))
+	diff = ImageChops.difference(image, white).convert("L")
+	threshold = int(255 * 0.01)
+	mask = diff.point(lambda p: 255 if p > threshold else 0)
+	bbox = mask.getbbox()
+	if not bbox or bbox == (0, 0, image.width, image.height):
+		return None
+
+	cropped = image.crop(bbox)
+	output = BytesIO()
+	cropped.save(output, format="PNG")
+	return output.getvalue()
 
 
 def render_equation(element: etree._Element) -> str:
@@ -667,10 +928,34 @@ def collect_math_text(element: etree._Element) -> str:
 	return normalize_text("".join(parts))
 
 
+def is_compound_marker(text: str) -> bool:
+	return bool(COMPOUND_MARKER_RE.match(text))
+
+
+def extract_question_content(text: str, html_value: str, question_match: re.Match[str]) -> tuple[str, str]:
+	body_text = normalize_text(question_match.group(2) or "")
+	if not body_text:
+		return normalize_text(text), html_value
+
+	prefix = text[: question_match.start(2)]
+	cleaned_html = html_value
+	escaped_prefix = html.escape(prefix)
+	if cleaned_html.startswith(escaped_prefix):
+		cleaned_html = cleaned_html[len(escaped_prefix) :].lstrip()
+	else:
+		stripped_prefix = html.escape(prefix.rstrip())
+		if cleaned_html.startswith(stripped_prefix):
+			cleaned_html = cleaned_html[len(stripped_prefix) :].lstrip()
+
+	return body_text, cleaned_html or html.escape(body_text)
+
+
 def parse_questions_from_fragments(fragments: list[ParagraphFragment], source_file: str) -> list[MCQQuestion]:
 	questions: list[MCQQuestion] = []
 	current_question: MCQQuestion | None = None
 	current_option: MCQOption | None = None
+	compound_text_parts: list[str] = []
+	compound_html_parts: list[str] = []
 	in_solution = False
 
 	for fragment in fragments:
@@ -680,19 +965,44 @@ def parse_questions_from_fragments(fragments: list[ParagraphFragment], source_fi
 		if not text and not html_value:
 			continue
 
+		if is_compound_marker(text):
+			if current_question is not None:
+				questions.append(current_question)
+			marker_text = normalize_text(text).lower()
+			if "end compound" in marker_text:
+				compound_text_parts = []
+				compound_html_parts = []
+			elif "start compound" in marker_text:
+				compound_text_parts = []
+				compound_html_parts = []
+			current_option = None
+			current_question = None
+			in_solution = False
+			continue
+
 		question_start = QUESTION_START_RE.match(text)
 		if question_start:
 			if current_question is not None:
 				questions.append(current_question)
 
-			current_question = MCQQuestion(source_file=source_file, number=question_start.group(1))
-			current_question.question_text_parts.append(text)
-			current_question.question_html_parts.append(html_value)
+			question_text, question_html = extract_question_content(text, html_value, question_start)
+			current_question = MCQQuestion(
+				source_file=source_file,
+				number=question_start.group(1),
+				compound_text=normalize_text(" ".join(compound_text_parts)),
+				compound_html=join_html_parts(compound_html_parts),
+			)
+			current_question.question_text_parts.append(question_text)
+			current_question.question_html_parts.append(question_html)
 			current_option = None
 			in_solution = False
 			continue
 
 		if current_question is None:
+			if text:
+				compound_text_parts.append(text)
+			if html_value:
+				compound_html_parts.append(html_value)
 			continue
 
 		answer_match = ANSWER_RE.match(text)
@@ -774,11 +1084,48 @@ def question_to_dict(question: MCQQuestion) -> dict[str, str | list[dict[str, st
 	}
 
 
-def report_to_dict(report: DocumentReport) -> dict[str, str | int | list[dict[str, str | list[dict[str, str]] | None]]]:
+def compound_to_dict(
+	compound_text: str,
+	compound_html: str,
+	questions: list[MCQQuestion],
+) -> dict[str, str | int | list[dict[str, str | list[dict[str, str]] | None]]]:
+	return {
+		"compound_text": compound_text,
+		"compound_html": compound_html,
+		"total_questions": len(questions),
+		"questions": [question_to_dict(question) for question in questions],
+	}
+
+
+def group_compound_questions(questions: list[MCQQuestion]) -> list[dict[str, str | int | list[dict[str, str | list[dict[str, str]] | None]]]]:
+	compounds: list[dict[str, str | int | list[dict[str, str | list[dict[str, str]] | None]]]] = []
+	current_key: tuple[str, str] | None = None
+	current_questions: list[MCQQuestion] = []
+
+	for question in questions:
+		if not question.compound_text and not question.compound_html:
+			continue
+
+		key = (question.compound_text, question.compound_html)
+		if current_key is not None and key != current_key:
+			compounds.append(compound_to_dict(current_key[0], current_key[1], current_questions))
+			current_questions = []
+
+		current_key = key
+		current_questions.append(question)
+
+	if current_key is not None:
+		compounds.append(compound_to_dict(current_key[0], current_key[1], current_questions))
+
+	return compounds
+
+
+def report_to_dict(report: DocumentReport) -> dict[str, str | int | list[dict[str, str | int | list[dict[str, str | list[dict[str, str]] | None]] | None]]]:
 	return {
 		"source_file": report.source_file,
 		"total_questions": len(report.questions),
 		"questions": [question_to_dict(question) for question in report.questions],
+		"compounds": group_compound_questions(report.questions),
 	}
 
 

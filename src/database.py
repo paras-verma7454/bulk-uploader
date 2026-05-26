@@ -31,6 +31,7 @@ def _load_env_file() -> None:
 
 
 def _normalize_database_url(database_url: str) -> str:
+    database_url = database_url.strip().strip('"').strip("'")
     if database_url.startswith("postgresql://"):
         return database_url.replace("postgresql://", "postgresql+pg8000://", 1)
     if database_url.startswith("postgres://"):

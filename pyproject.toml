@@ -9,6 +9,7 @@ dependencies = [
     "cloudinary>=1.44.1",
     "fastapi[standard]>=0.136.1",
     "lxml>=6.1.0",
+    "pillow>=10.4.0",
     "pg8000>=1.31.2",
     "psycopg2-binary>=2.9.12",
     "python-docx>=1.2.0",

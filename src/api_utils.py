@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -49,18 +50,17 @@ def dedupe_images_in_html(html_fragment: str) -> str:
 def write_report_html(report_data: dict[str, Any], source_file: str) -> str:
     """Write parsed document report as HTML file.
     
-    Always writes to output.html (overwrites existing file).
+    Writes to OUTPUT_HTML_PATH (defaults to output/output.html).
     Returns the path to the generated HTML file.
     """
-    output_path = Path("output.html")
+    output_path = Path(os.getenv("OUTPUT_HTML_PATH", "output/output.html"))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     questions = report_data.get("questions", [])
+    compounds = report_data.get("compounds", [])
     questions_html_parts: list[str] = []
 
-    for index, question in enumerate(questions, start=1):
-        if not isinstance(question, dict):
-            continue
-
+    def render_question_card(question: dict[str, Any], index: int) -> str:
         question_number = question.get("number") or str(index)
         question_html = str(question.get("question_html") or "").strip()
         question_text = str(question.get("question_text") or "").strip()
@@ -90,7 +90,7 @@ def write_report_html(report_data: dict[str, Any], source_file: str) -> str:
         rendered_solution = dedupe_images_in_html(solution_html) if solution_html else html.escape(solution_text) or "<em>No solution provided.</em>"
 
         answer_badge = html.escape(answer_label) if answer_label else "N/A"
-        questions_html_parts.append(
+        return (
             "<section class=\"question-card\">"
             + "<div class=\"question-head\">"
             + "<h2>Question "
@@ -111,6 +111,39 @@ def write_report_html(report_data: dict[str, Any], source_file: str) -> str:
             + "</section>"
         )
 
+    question_index = 1
+    if isinstance(compounds, list) and compounds:
+        for compound in compounds:
+            if not isinstance(compound, dict):
+                continue
+
+            compound_html = str(compound.get("compound_html") or "").strip()
+            compound_text = str(compound.get("compound_text") or "").strip()
+            rendered_compound = dedupe_images_in_html(compound_html) if compound_html else html.escape(compound_text)
+            compound_questions = compound.get("questions", [])
+            nested_questions = []
+
+            if isinstance(compound_questions, list):
+                for question in compound_questions:
+                    if not isinstance(question, dict):
+                        continue
+                    nested_questions.append(render_question_card(question, question_index))
+                    question_index += 1
+
+            questions_html_parts.append(
+                "<section class=\"compound-card\">"
+                + ("<div class=\"compound-body\">" + rendered_compound + "</div>" if rendered_compound else "")
+                + "".join(nested_questions)
+                + "</section>"
+            )
+
+    if not questions_html_parts:
+        for index, question in enumerate(questions, start=question_index):
+            if not isinstance(question, dict):
+                continue
+
+            questions_html_parts.append(render_question_card(question, index))
+
     questions_html = "".join(questions_html_parts) or "<p>No MCQ questions found in parsed output.</p>"
 
     html_content = (
@@ -127,11 +160,13 @@ def write_report_html(report_data: dict[str, Any], source_file: str) -> str:
         "    .container { max-width: 1100px; margin: 0 auto; }\n"
         "    h1 { margin: 0 0 0.5rem 0; }\n"
         "    p.meta { color: #475569; margin: 0 0 1.5rem 0; }\n"
+        "    .compound-card { margin-bottom: 1rem; }\n"
         "    .question-card { background: #ffffff; border: 1px solid #dbe5f1; border-radius: 10px; padding: 1rem 1.1rem; margin-bottom: 1rem; }\n"
         "    .question-head { display: flex; justify-content: space-between; gap: 1rem; align-items: center; margin-bottom: 0.8rem; flex-wrap: wrap; }\n"
         "    .question-head h2 { margin: 0; font-size: 1.1rem; }\n"
         "    .answer-badge { background: #dbeafe; color: #1e3a8a; border-radius: 999px; padding: 0.2rem 0.65rem; font-weight: 600; font-size: 0.88rem; }\n"
         "    .question-body { margin-bottom: 0.9rem; line-height: 1.55; font-family: 'Cambria Math', 'Times New Roman', serif; }\n"
+        "    .compound-body { margin-bottom: 0.9rem; padding: 0.75rem; background: #f8fafc; border-left: 4px solid #94a3b8; line-height: 1.55; font-family: 'Cambria Math', 'Times New Roman', serif; }\n"
         "    .option-list { margin: 0; padding-left: 0; list-style: none; }\n"
         "    .option { margin-bottom: 0.55rem; line-height: 1.45; font-family: 'Cambria Math', 'Times New Roman', serif; }\n"
         "    .option .answer-mark { font-weight: 600; color: #334155; margin-left: 0.5rem; }\n"
