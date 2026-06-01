@@ -13,7 +13,7 @@ from docx.opc.exceptions import PackageNotFoundError
 from fastapi import File, HTTPException, UploadFile
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.database import get_session, save_document_report
+from src.database import get_session, save_document_report, document_to_dict
 from src.parser import parse_document, report_to_dict
 
 logger = logging.getLogger(__name__)
@@ -205,7 +205,7 @@ def validate_docx_upload(file: UploadFile) -> None:
         raise HTTPException(status_code=400, detail="Unsupported content type for DOCX upload")
 
 
-def parse_and_store_upload(file: UploadFile) -> dict[str, Any]:
+def parse_and_store_upload(file: UploadFile, user_id: int | None = None) -> dict[str, Any]:
     """Parse a DOCX upload, store in database, and generate HTML report."""
     validate_docx_upload(file)
 
@@ -224,15 +224,15 @@ def parse_and_store_upload(file: UploadFile) -> dict[str, Any]:
 
     try:
         with get_session() as session:
-            saved_document = save_document_report(session, report)
+            saved_document = save_document_report(session, report, user_id=user_id)
     except SQLAlchemyError as exc:
         logger.exception("Failed to store parsed document: %s", file.filename)
         raise HTTPException(status_code=500, detail="Failed to store parsed document") from exc
 
-    response = report_to_dict(report)
-    response["import_id"] = saved_document.id
+    response = document_to_dict(saved_document)
+    report_dict = report_to_dict(report)
     try:
-        response["output_html_file"] = write_report_html(response, file.filename)
+        response["output_html_file"] = write_report_html(report_dict, file.filename)
     except OSError as exc:
         logger.exception("Failed to write output HTML file: %s", file.filename)
         raise HTTPException(status_code=500, detail="Parsed file but failed to write output HTML") from exc
