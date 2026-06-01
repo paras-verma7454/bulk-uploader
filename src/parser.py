@@ -186,15 +186,9 @@ def extract_option_content(text: str, html_value: str, option_match: re.Match[st
 	
 	if prefix:
 		prefix_clean = prefix.rstrip()
-		if body_text:
-			body_text = prefix_clean + " " + body_text
-		else:
-			body_text = prefix_clean
-		
-		
 		escaped_prefix_safe = html.escape(prefix_clean)
-		if not cleaned_html.lstrip().startswith(escaped_prefix_safe):
-			cleaned_html = html.escape(prefix_clean) + " " + cleaned_html.lstrip()
+		if cleaned_html.lstrip().startswith(escaped_prefix_safe):
+			cleaned_html = cleaned_html.lstrip()[len(escaped_prefix_safe):].lstrip()
 
 	return body_text, cleaned_html.lstrip()
 
@@ -1033,7 +1027,8 @@ def parse_questions_from_fragments(fragments: list[ParagraphFragment], source_fi
 				option_match = OPTION_RE.match(candidate)
 				used_text_for_match = candidate
 		if option_match:
-			option_label = option_match.group(1) or option_match.group(2)
+			option_label_char = option_match.group(1) or option_match.group(2)
+			option_label = f"({option_label_char})"
 			
 			option_text, option_html = extract_option_content(used_text_for_match, html_value, option_match)
 			current_option = MCQOption(label=option_label)

@@ -6,9 +6,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from src.routers import api, auth
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="DOCX Parser API", version="1.0.0")
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from src.database import init_db
+    init_db()
+    yield
+
+
+app = FastAPI(title="DOCX Parser API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,13 +53,8 @@ def custom_openapi() -> dict[str, Any]:
     app.openapi_schema = schema
     return app.openapi_schema
 
+
 app.openapi = custom_openapi
-
-
-@app.on_event("startup")
-def startup() -> None:
-    from src.database import init_db
-    init_db()
 
 
 @app.get("/")
